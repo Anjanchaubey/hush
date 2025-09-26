@@ -4,11 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebRTC Voice Chat</title>
-    <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body {
@@ -170,15 +168,6 @@
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        
-        .pulse {
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-        }
     </style>
 </head>
 <body class="flex items-center justify-center min-h-screen">
@@ -233,18 +222,11 @@
         <!-- This div will hold the audio elements for remote peers -->
         <div id="remote-audio-container"></div>
     </div>
-    
 
-    <!-- Firebase SDKs -->
     <script type="module">
-        // Import necessary functions from Firebase SDKs
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, addDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, deleteDoc, addDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // --- CONFIGURATION ---
-
-
         // Firebase configuration
         const firebaseConfig = {
             apiKey: "AIzaSyCYY2GQqS0tCXb7Oxw8AWXhpexq9e8VRUs",
@@ -257,34 +239,29 @@
             databaseURL: "https://aspirehub-32863-default-rtdb.asia-southeast1.firebasedatabase.app"
         };
         
-        const appId = 'webrtc-voice-chat';
-
-        // --- FIREBASE INITIALIZATION ---
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
-        const auth = getAuth(app);
-
-        // --- WebRTC CONFIGURATION ---
-        // Using a public STUN server from Google to help peers discover each other's IP addresses,
-        // which is necessary for NAT traversal.
+        
+        // Generate unique user ID
+        const userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        
+        // WebRTC configuration
         const servers = {
             iceServers: [
-                {
-                    urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'],
-                },
-            ],
-            iceCandidatePoolSize: 10,
+                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+            ]
         };
 
-        // --- GLOBAL STATE VARIABLES ---
-        let localStream;      // Holds the user's local microphone audio stream.
-        let isMuted = false;  // Tracks the mute state.
-        let roomId;           // The ID of the room the user is in.
-        let userId;           // The unique ID for the current user.
-        let peerConnections = {}; // An object to store RTCPeerConnection instances for each peer.
-        let unsubscribeUserListener; // A function to stop listening to Firestore changes.
+        // Global variables
+        let localStream;
+        let isMuted = false;
+        let roomId;
+        let peerConnection;
+        let isOfferer = false;
+        let hasProcessedOffer = false;
+        let hasProcessedAnswer = false;
 
-        // --- UI ELEMENTS ---
+        // UI elements
         const joinView = document.getElementById('join-view');
         const roomView = document.getElementById('room-view');
         const joinBtn = document.getElementById('join-btn');
@@ -297,32 +274,7 @@
         const micOffIcon = document.getElementById('mic-off-icon');
         const participantsCountEl = document.getElementById('participants-count');
 
-
-        // --- AUTHENTICATION ---
-        // Generate a unique user ID if anonymous auth fails
-        let authReady = false;
-        
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                userId = user.uid;
-                authReady = true;
-            } else {
-                try {
-                    await signInAnonymously(auth);
-                } catch (error) {
-                    console.warn('Anonymous auth failed, using fallback ID:', error);
-                    // Fallback: generate a unique ID
-                    userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                    authReady = true;
-                }
-            }
-        });
-
-
-        // --- EVENT LISTENERS ---
-
-        // Join Button: Handles the logic for joining a room.
-        joinBtn.onclick = async () => {
+        async function attemptJoinRoom() {
             roomId = roomIdInput.value.trim();
             if (!/^\d{4}$/.test(roomId)) {
                 errorMessage.textContent = 'Please enter a valid 4-digit room code.';
@@ -330,272 +282,219 @@
             }
             errorMessage.textContent = '';
             
-            // Wait for auth to be ready
-            let attempts = 0;
-            while (!authReady && attempts < 50) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                attempts++;
-            }
-            
-            if (!userId) {
-                errorMessage.textContent = 'Authentication failed. Please refresh and try again.';
-                return;
-            }
-            
             try {
-                // 1. Get user's microphone access
-                localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-
-                // 2. Join the signaling room in Firestore
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 await joinRoom();
-
-                // 3. Switch UI to the room view
                 joinView.classList.add('hidden');
                 roomView.classList.remove('hidden');
                 roomStatus.textContent = `Connected to Room: ${roomId}`;
             } catch (error) {
-                console.error("Error joining room:", error);
+                console.error("Error:", error);
                 errorMessage.textContent = "Could not access microphone or join room.";
             }
-        };
+        }
 
-        // Mute Button: Toggles the local audio stream on and off.
+        joinBtn.onclick = attemptJoinRoom;
+        
+        roomIdInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && roomIdInput.value.trim().length === 4) {
+                attemptJoinRoom();
+            }
+        });
+
+        // Mute button
         muteBtn.onclick = () => {
             isMuted = !isMuted;
             localStream.getAudioTracks()[0].enabled = !isMuted;
             micOnIcon.classList.toggle('hidden', isMuted);
             micOffIcon.classList.toggle('hidden', !isMuted);
-            muteBtn.classList.toggle('bg-blue-600', isMuted);
-            muteBtn.classList.toggle('bg-gray-600', !isMuted);
-
         };
 
-        // Hang Up Button: Disconnects from the call and returns to the join screen.
+        // Hang up button
         hangupBtn.onclick = async () => {
             await hangUp();
             roomView.classList.add('hidden');
             joinView.classList.remove('hidden');
             roomIdInput.value = '';
         };
-        
-        // Cleanup on page close
-        window.addEventListener('beforeunload', hangUp);
 
-        // --- CORE WEBRTC & FIRESTORE LOGIC ---
-
-        /**
-         * Joins the room, sets up listeners for other participants,
-         * and announces presence.
-         */
         async function joinRoom() {
-            const roomRef = collection(db, `artifacts/${appId}/public/data/rooms/${roomId}/users`);
-            const userDocRef = doc(roomRef, userId);
+            const roomRef = doc(db, 'rooms', roomId);
+            const roomDoc = await getDoc(roomRef);
+            
+            if (!roomDoc.exists()) {
+                // First person - create room
+                isOfferer = true;
+                await setDoc(roomRef, { 
+                    creator: userId, 
+                    created: new Date(),
+                    participants: [userId]
+                });
+                console.log('Created room as offerer');
+            } else {
+                // Second person - join existing room
+                isOfferer = false;
+                console.log('Joining existing room');
+            }
 
-            // Add self to the room
-            await setDoc(userDocRef, { joined: new Date() });
+            await createPeerConnection();
+            setupRoomListener();
+        }
 
-            // Listen for other users in the room
-            unsubscribeUserListener = onSnapshot(roomRef, async (snapshot) => {
-                const remoteUserIds = snapshot.docs
-                    .map(doc => doc.id)
-                    .filter(id => id !== userId); // Exclude self
-                
-                updateParticipantsCount(remoteUserIds.length + 1);
-
-                // For each remote user, create a peer connection if one doesn't exist.
-                for (const remoteUserId of remoteUserIds) {
-                    if (!peerConnections[remoteUserId]) {
-                        await createPeerConnection(remoteUserId, true); // This user is the offerer
-                    }
-                }
-                
-                 // Clean up connections for users who have left
-                for (const existingPeerId in peerConnections) {
-                    if (!remoteUserIds.includes(existingPeerId)) {
-                        peerConnections[existingPeerId].close();
-                        delete peerConnections[existingPeerId];
-                        const remoteAudio = document.getElementById(`audio-${existingPeerId}`);
-                        if(remoteAudio) remoteAudio.remove();
-                    }
-                }
+        async function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(servers);
+            
+            // Add local stream
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
             });
 
-            // Listen for offers/answers/candidates on my own user document
-            onSnapshot(userDocRef, (doc) => {
-                const data = doc.data();
-                if (data) {
-                    // When receiving an offer from a peer
-                    if (data.offer && !peerConnections[data.offer.from]) {
-                        handleOffer(data.offer);
-                    }
-                    // When receiving an answer from a peer
-                    if (data.answer) {
-                        handleAnswer(data.answer);
-                    }
-                }
-            });
+            // Handle remote stream
+            peerConnection.ontrack = event => {
+                console.log('Received remote stream');
+                const remoteAudio = document.createElement('audio');
+                remoteAudio.srcObject = event.streams[0];
+                remoteAudio.autoplay = true;
+                remoteAudio.playsInline = true;
+                remoteAudio.volume = 1.0;
+                remoteAudio.muted = false;
+                
+                // Ensure audio plays
+                remoteAudio.play().then(() => {
+                    console.log('Remote audio playing');
+                }).catch(error => {
+                    console.error('Audio play failed:', error);
+                    // Try to play on user interaction
+                    document.addEventListener('click', () => {
+                        remoteAudio.play();
+                    }, { once: true });
+                });
+                
+                document.getElementById('remote-audio-container').appendChild(remoteAudio);
+                participantsCountEl.textContent = 'Participants: 2';
+            };
 
-            // Listen for ICE candidates from peers
-             onSnapshot(collection(userDocRef, 'candidates'), (snapshot) => {
-                snapshot.docChanges().forEach(async (change) => {
-                    if (change.type === "added") {
-                        const candidateData = change.doc.data();
-                        const peerId = candidateData.from;
-                        if (peerConnections[peerId] && peerConnections[peerId].remoteDescription) {
-                            await peerConnections[peerId].addIceCandidate(new RTCIceCandidate(candidateData.candidate));
+            // Handle ICE candidates
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    addDoc(collection(db, 'rooms', roomId, 'candidates'), {
+                        candidate: event.candidate.toJSON(),
+                        from: userId
+                    });
+                }
+            };
+
+            if (isOfferer) {
+                // Create and send offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                await setDoc(doc(db, 'rooms', roomId, 'offers', userId), {
+                    offer: { type: offer.type, sdp: offer.sdp },
+                    from: userId
+                });
+            }
+        }
+
+        function setupRoomListener() {
+            // Listen for offers (answerer only)
+            if (!isOfferer) {
+                onSnapshot(collection(db, 'rooms', roomId, 'offers'), snapshot => {
+                    snapshot.docChanges().forEach(async change => {
+                        if (change.type === 'added' && change.doc.data().from !== userId && !hasProcessedOffer) {
+                            hasProcessedOffer = true;
+                            const offer = change.doc.data().offer;
+                            console.log('Answerer: Processing offer, state:', peerConnection.signalingState);
+                            
+                            if (peerConnection.signalingState === 'stable') {
+                                try {
+                                    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                                    const answer = await peerConnection.createAnswer();
+                                    await peerConnection.setLocalDescription(answer);
+                                    
+                                    await setDoc(doc(db, 'rooms', roomId, 'answers', userId), {
+                                        answer: { type: answer.type, sdp: answer.sdp },
+                                        from: userId
+                                    });
+                                    console.log('Answerer: Sent answer');
+                                } catch (error) {
+                                    console.error('Answerer error:', error);
+                                    hasProcessedOffer = false;
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+
+            // Listen for answers (offerer only)
+            if (isOfferer) {
+                onSnapshot(collection(db, 'rooms', roomId, 'answers'), snapshot => {
+                    snapshot.docChanges().forEach(async change => {
+                        if (change.type === 'added' && change.doc.data().from !== userId && !hasProcessedAnswer) {
+                            hasProcessedAnswer = true;
+                            const answer = change.doc.data().answer;
+                            console.log('Offerer: Processing answer, state:', peerConnection.signalingState);
+                            
+                            if (peerConnection.signalingState === 'have-local-offer') {
+                                try {
+                                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                                    console.log('Connection established!');
+                                } catch (error) {
+                                    console.error('Offerer error:', error);
+                                    hasProcessedAnswer = false;
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+
+            // Listen for ICE candidates
+            onSnapshot(collection(db, 'rooms', roomId, 'candidates'), snapshot => {
+                snapshot.docChanges().forEach(async change => {
+                    if (change.type === 'added' && change.doc.data().from !== userId) {
+                        const candidate = change.doc.data().candidate;
+                        if (peerConnection.remoteDescription) {
+                            try {
+                                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                            } catch (error) {
+                                console.error('ICE candidate error:', error);
+                            }
                         }
                     }
                 });
             });
         }
 
-        /**
-         * Creates and configures an RTCPeerConnection for a given peer.
-         * @param {string} peerId The UID of the remote peer.
-         * @param {boolean} isOfferer True if this client is initiating the connection.
-         */
-        async function createPeerConnection(peerId, isOfferer) {
-            console.log(`Creating peer connection to ${peerId}, isOfferer: ${isOfferer}`);
-            peerConnections[peerId] = new RTCPeerConnection(servers);
-
-            // Add local audio tracks to the connection to be sent to the peer.
-            localStream.getTracks().forEach(track => {
-                peerConnections[peerId].addTrack(track, localStream);
-            });
-
-            // When the remote peer adds their audio stream, this event fires.
-            peerConnections[peerId].ontrack = event => {
-                const remoteAudio = document.createElement('audio');
-                remoteAudio.id = `audio-${peerId}`;
-                remoteAudio.srcObject = event.streams[0];
-                remoteAudio.autoplay = true;
-                remoteAudio.playsInline = true;
-                document.getElementById('remote-audio-container').appendChild(remoteAudio);
-            };
-
-            // When an ICE candidate is generated, send it to the peer via Firestore.
-            peerConnections[peerId].onicecandidate = event => {
-                if (event.candidate) {
-                    const peerUserDocRef = doc(db, `artifacts/${appId}/public/data/rooms/${roomId}/users/${peerId}`);
-                    const candidateCollection = collection(peerUserDocRef, 'candidates');
-                    addDoc(candidateCollection, {
-                        from: userId,
-                        candidate: event.candidate.toJSON()
-                    });
-                }
-            };
-            
-            // If this client is the one initiating, create and send an offer.
-            if (isOfferer) {
-                const offer = await peerConnections[peerId].createOffer();
-                await peerConnections[peerId].setLocalDescription(offer);
-                
-                const peerUserDocRef = doc(db, `artifacts/${appId}/public/data/rooms/${roomId}/users/${peerId}`);
-                await setDoc(peerUserDocRef, {
-                    offer: {
-                        from: userId,
-                        sdp: offer.sdp,
-                        type: offer.type
-                    }
-                }, { merge: true });
-            }
-        }
-        
-        /**
-         * Handles an incoming offer from a peer.
-         * @param {object} offer The offer object containing sdp, type, and from (peerId).
-         */
-        async function handleOffer(offer) {
-            const peerId = offer.from;
-            console.log(`Received offer from ${peerId}`);
-            if (!peerConnections[peerId]) {
-                 await createPeerConnection(peerId, false); // Not the offerer
-            }
-            
-            const pc = peerConnections[peerId];
-            await pc.setRemoteDescription(new RTCSessionDescription({ type: offer.type, sdp: offer.sdp }));
-            
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-
-            const peerUserDocRef = doc(db, `artifacts/${appId}/public/data/rooms/${roomId}/users/${peerId}`);
-            await updateDoc(peerUserDocRef, {
-                answer: {
-                    from: userId,
-                    sdp: answer.sdp,
-                    type: answer.type
-                }
-            });
-        }
-
-        /**
-         * Handles an incoming answer from a peer.
-         * @param {object} answer The answer object containing sdp, type, and from (peerId).
-         */
-        async function handleAnswer(answer) {
-            const peerId = answer.from;
-             console.log(`Received answer from ${peerId}`);
-            const pc = peerConnections[peerId];
-            if (pc && !pc.currentRemoteDescription) {
-                 const sessionDescription = new RTCSessionDescription(answer);
-                 await pc.setRemoteDescription(sessionDescription);
-            }
-        }
-        
-        /**
-         * Updates the participant count display.
-         */
-        function updateParticipantsCount(count) {
-             participantsCountEl.textContent = `Participants: ${count}`;
-        }
-
-        /**
-         * Cleans up all connections and Firestore data.
-         */
         async function hangUp() {
-            // Stop local media tracks
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
                 localStream = null;
             }
-
-            // Close all peer connections
-            for (const peerId in peerConnections) {
-                peerConnections[peerId].close();
-            }
-            peerConnections = {};
             
-            // Remove audio elements
-             document.getElementById('remote-audio-container').innerHTML = '';
-
-
-            // Clean up Firestore data
-            if (roomId && userId) {
-                 const roomRef = collection(db, `artifacts/${appId}/public/data/rooms/${roomId}/users`);
-                 const userDocRef = doc(roomRef, userId);
-
-                // Stop listening for users
-                if (unsubscribeUserListener) {
-                    unsubscribeUserListener();
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            
+            document.getElementById('remote-audio-container').innerHTML = '';
+            participantsCountEl.textContent = 'Participants: 1';
+            
+            if (roomId) {
+                try {
+                    await deleteDoc(doc(db, 'rooms', roomId));
+                } catch (error) {
+                    console.log('Room cleanup error:', error);
                 }
-
-                // Delete all candidates in the subcollection
-                const candidatesCollectionRef = collection(userDocRef, 'candidates');
-                const candidatesSnapshot = await getDocs(candidatesCollectionRef);
-                const batch = writeBatch(db);
-                candidatesSnapshot.docs.forEach((doc) => {
-                    batch.delete(doc.ref);
-                });
-                await batch.commit();
-
-                // Delete the user document
-                await deleteDoc(userDocRef);
             }
             
-            updateParticipantsCount(1);
             roomId = null;
+            hasProcessedOffer = false;
+            hasProcessedAnswer = false;
         }
 
+        window.addEventListener('beforeunload', hangUp);
     </script>
 </body>
 </html>
