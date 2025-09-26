@@ -299,12 +299,22 @@
 
 
         // --- AUTHENTICATION ---
-        // Sign in the user anonymously to get a unique UID.
+        // Generate a unique user ID if anonymous auth fails
+        let authReady = false;
+        
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 userId = user.uid;
+                authReady = true;
             } else {
-                await signInAnonymously(auth);
+                try {
+                    await signInAnonymously(auth);
+                } catch (error) {
+                    console.warn('Anonymous auth failed, using fallback ID:', error);
+                    // Fallback: generate a unique ID
+                    userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+                    authReady = true;
+                }
             }
         });
 
@@ -319,6 +329,18 @@
                 return;
             }
             errorMessage.textContent = '';
+            
+            // Wait for auth to be ready
+            let attempts = 0;
+            while (!authReady && attempts < 50) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                attempts++;
+            }
+            
+            if (!userId) {
+                errorMessage.textContent = 'Authentication failed. Please refresh and try again.';
+                return;
+            }
             
             try {
                 // 1. Get user's microphone access
