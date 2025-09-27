@@ -11,7 +11,7 @@
     <style>
         body {
             font-family: 'Inter', sans-serif;
-            background: red;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             color: #ffffff;
         }
@@ -248,12 +248,8 @@
         // WebRTC configuration
         const servers = {
             iceServers: [
-                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
-                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-                { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-                { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-            ],
-            iceCandidatePoolSize: 10
+                { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+            ]
         };
 
         // Global variables
@@ -362,40 +358,33 @@
             // Handle remote stream
             peerConnection.ontrack = event => {
                 console.log('Received remote stream');
-                const remoteAudio = document.createElement('audio');
-                remoteAudio.srcObject = event.streams[0];
-                remoteAudio.autoplay = true;
-                remoteAudio.playsInline = true;
-                remoteAudio.volume = 1.0;
-                
-                // Ensure audio plays
-                remoteAudio.play().then(() => {
-                    console.log('Remote audio playing');
-                }).catch(error => {
-                    console.error('Audio play failed:', error);
-                    // Try to play on user interaction
-                    document.addEventListener('click', () => {
-                        remoteAudio.play();
-                    }, { once: true });
-                });
-                
-                document.getElementById('remote-audio-container').appendChild(remoteAudio);
-                participantsCountEl.textContent = 'Participants: 2';
-            };
-            
-            // Debug connection state
-            peerConnection.onconnectionstatechange = () => {
-                console.log('Connection state:', peerConnection.connectionState);
-            };
-            
-            peerConnection.oniceconnectionstatechange = () => {
-                console.log('ICE connection state:', peerConnection.iceConnectionState);
+                // Only play remote audio, never local audio
+                if (event.streams[0] !== localStream) {
+                    const remoteAudio = document.createElement('audio');
+                    remoteAudio.srcObject = event.streams[0];
+                    remoteAudio.autoplay = true;
+                    remoteAudio.playsInline = true;
+                    remoteAudio.volume = 1.0;
+                    
+                    // Ensure audio plays
+                    remoteAudio.play().then(() => {
+                        console.log('Remote audio playing');
+                    }).catch(error => {
+                        console.error('Audio play failed:', error);
+                        // Try to play on user interaction
+                        document.addEventListener('click', () => {
+                            remoteAudio.play();
+                        }, { once: true });
+                    });
+                    
+                    document.getElementById('remote-audio-container').appendChild(remoteAudio);
+                    participantsCountEl.textContent = 'Participants: 2';
+                }
             };
 
             // Handle ICE candidates
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    console.log('ICE candidate:', event.candidate);
                     addDoc(collection(db, 'rooms', roomId, 'candidates'), {
                         candidate: event.candidate.toJSON(),
                         from: userId
@@ -517,4 +506,3 @@
     </script>
 </body>
 </html>
-
